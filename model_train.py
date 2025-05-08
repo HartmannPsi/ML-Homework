@@ -1,4 +1,8 @@
 # FixMatch 实现：MNIST + EMNIST 半监督分类任务
+# Features:
+# 1. 可选多种模型(CNN, ResNet)
+# 2. 引入动态伪标签阈值
+# 3. Early Stopping 稳定性优化
 
 import torch
 import torch.nn as nn
@@ -13,6 +17,7 @@ import random
 import matplotlib.pyplot as plt
 import sys
 import os
+import time
 
 # 设置随机种子
 def set_seed(seed=42):
@@ -113,11 +118,33 @@ class ResNet18(nn.Module):
 
     def forward(self, x):
         return self.base(x)
+    
+# MixUp 函数
+def mixup(x1, y1, x2, y2, alpha=0.75):
+    lam = np.random.beta(alpha, alpha)
+    x_mix = lam * x1 + (1 - lam) * x2
+    y_mix = lam * y1 + (1 - lam) * y2
+    return x_mix, y_mix
+
+# 两种动态阈值策略（线性或平滑）
+def thres_linear(max_t, min_t, epoch, k):
+    step = (max_t - min_t) / k
+    return min(max_t, min_t + (epoch - 1) * step)
+
+def thres_smooth(max_t, min_t, epoch, k):
+    thres = min_t + (1 - min_t) * (1 - np.exp(-(epoch - 1) / k))
+    return min(max_t, thres)
 
 # FixMatch 训练函数
-def train_fixmatch(model, labeled_loader, unlabeled_loader, optimizer, epoch, lambda_u=1.0, threshold=0.95):
+def train_fixmatch(model, labeled_loader, unlabeled_loader,
+                   optimizer, epoch, lambda_u=1.0, max_threshold=0.95,
+                   min_threshold=0.5, thres_arg=50, dynamic_thres=True,
+                   thres_strategy=thres_linear, enable_mixup=True):
     model.train()
     total_loss, total_supervised, total_unsupervised = 0, 0, 0
+
+    # 动态阈值
+    threshold = thres_strategy(max_threshold, min_threshold, epoch, thres_arg) if dynamic_thres else max_threshold
 
     for batch_idx, ((x_l, y_l), (x_uw, x_us)) in enumerate(zip(labeled_loader, unlabeled_loader)):
         x_l, y_l = x_l.to(device), y_l.to(device)
@@ -125,8 +152,14 @@ def train_fixmatch(model, labeled_loader, unlabeled_loader, optimizer, epoch, la
 
         # 有标签监督损失
         # 数据增强： one-hot + mixup
-        logits_l = model(x_l)
-        loss_l = F.cross_entropy(logits_l, y_l)
+        if enable_mixup:
+            y_l_onehot =  F.one_hot(y_l, num_classes=10).float()
+            x_l, y_l_onehot = mixup(x_l, y_l_onehot, x_l.flip(0), y_l_onehot.flip(0))
+            logits_l = model(x_l)
+            loss_l = F.cross_entropy(logits_l, y_l_onehot)
+        else:
+            logits_l = model(x_l)
+            loss_l = F.cross_entropy(logits_l, y_l)
 
         # 弱增强预测伪标签
         with torch.no_grad():
@@ -134,7 +167,7 @@ def train_fixmatch(model, labeled_loader, unlabeled_loader, optimizer, epoch, la
             max_probs, targets_u = torch.max(pseudo_labels, dim=1)
             mask = max_probs.ge(threshold).float()
 
-        # 无标签伪监督损失
+        # 强增强计算无标签伪监督损失
         logits_u_s = model(x_us)
         loss_u = (F.cross_entropy(logits_u_s, targets_u, reduction="none") * mask).mean()
 
@@ -149,7 +182,7 @@ def train_fixmatch(model, labeled_loader, unlabeled_loader, optimizer, epoch, la
         total_supervised += loss_l.item()
         total_unsupervised += loss_u.item()
 
-    print(f"[Epoch {epoch}] Total Loss: {total_loss:.4f}, Supervised: {total_supervised:.4f}, Unsupervised: {total_unsupervised:.4f}, Used Unlabeled Data: {mask.sum().item()}")
+    print(f"[Epoch {epoch}] Total Loss: {total_loss:.4f}, Supervised: {total_supervised:.4f}, Unsupervised: {total_unsupervised:.4f}, Used Unlabeled Data: {mask.sum().item():.0f}")
     return total_loss, total_supervised, total_unsupervised
 
 # 测试函数
@@ -169,12 +202,14 @@ def evaluate(model, test_loader):
     return acc
 
 learning_rate = 0.001
-round = 100
+round = 50
 lambda_unsupervised = 1.0
-threshold = 0.8
+max_threshold = 0.8
+min_threshold = 0.5
+thres_arg = 50
 
 load_saved_model = False
-save_model = False
+save_model = True
 save_log = False
 
 model_name = "ResNet"
@@ -201,18 +236,22 @@ def main():
         print(f"Undefined Model: {model_name}")
         return 1
     model = model.to(device)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     # 可选择加载已保存的模型
     if os.path.exists(model_save_path) and load_saved_model:
         model.load_state_dict(torch.load(model_save_path, map_location=device))
         print(f"Load Model from: {model_save_path}")
 
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    # 初始化损失数组
+    # 初始化损失数组与最优准确率
     train_losses = []
     sup_losses = []
     unsup_losses = []
+    total_train_time = 0
+    total_eval_time = 0
+    best_acc = 98
+    acc_step = 0.1
 
     # 将训练日志重定向至日志文件
     if save_log:
@@ -220,17 +259,38 @@ def main():
 
     # 训练预设轮数
     for epoch in range(1, round + 1):
-        total_loss, sup_loss, unsup_loss = train_fixmatch(model, labeled_loader, unlabeled_loader, optimizer, epoch, lambda_u=lambda_unsupervised, threshold=threshold)
-        evaluate(model, test_loader)
+        train_start = time.time()
+        total_loss, sup_loss, unsup_loss = train_fixmatch(model, labeled_loader,
+                                                          unlabeled_loader, optimizer, epoch,
+                                                          lambda_u=lambda_unsupervised,
+                                                          max_threshold=max_threshold,
+                                                          min_threshold=min_threshold,
+                                                          thres_arg=thres_arg,
+                                                          dynamic_thres=not load_saved_model,
+                                                          thres_strategy=thres_linear,
+                                                          enable_mixup=False)
+        train_end = time.time()
+
         train_losses.append(total_loss)
         sup_losses.append(sup_loss)
         unsup_losses.append(unsup_loss)
 
-    # 保存模型参数到硬盘
-    if save_model:
-        torch.save(model.state_dict(), model_save_path)
-        print(f"Model Saved at: {model_save_path}")
+        eval_start = time.time()
+        acc = evaluate(model, test_loader)
+        eval_end = time.time()
+
+        total_train_time += train_end - train_start
+        total_eval_time += eval_end - eval_start
+
+        # 保存最优模型参数
+        if acc > best_acc and save_model:
+            best_acc = min(max(99.9, acc), acc + acc_step)
+            torch.save(model.state_dict(), model_save_path)
+            print(f"Model Saved at: {model_save_path} with Accuracy: {acc:.2f}%")
     
+    # 输出用时
+    print(f"Total Time (sec): {total_eval_time + total_train_time:.2f}; Train Time: {total_train_time:.2f}; Eval Time: {total_eval_time:.2f}")
+
     # 绘制训练损失曲线
     epochs = list(range(1, len(train_losses) + 1))
     plt.figure(figsize=(8, 5))
