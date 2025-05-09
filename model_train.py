@@ -1,15 +1,16 @@
 # FixMatch 实现：MNIST + EMNIST 半监督分类任务
 # Features:
-# 1. 可选多种模型(CNN, ResNet18, MobileNetV2, ShhulffleNetV2)
-# 2. 引入动态伪标签阈值
+# 1. 可选多种模型 (CNN, ResNet18, MobileNetV2, ShhulffleNetV2)
+# 2. 动态伪标签阈值
 # 3. Early Stopping 稳定性优化
-# 4. _TODO_: 引入 EMA 模型预测伪标签
+# 4. 对有标签数据集使用 RandAugment 增强并增广
+# 5. _TODO_: 使用 EMA 模型预测伪标签
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader, Subset, ConcatDataset
+from torch.utils.data import DataLoader, Subset, ConcatDataset, Dataset
 from torchvision.datasets import MNIST, EMNIST
 from torchvision import transforms
 from torchvision.models import resnet18, mobilenet_v2, shufflenet_v2_x0_5
@@ -33,6 +34,7 @@ load_saved_model = False
 save_model = True
 save_log = False
 calc_params = False
+labeled_data_augmentation = True
 
 model_name = "CNN"
 model_save_path = f"fixmatch_mnist_model_{model_name}.pth"
@@ -64,6 +66,13 @@ strong_transform = transforms.Compose([
     transforms.ToTensor()
 ])
 
+# 定义有标签数据集增强策略
+aug_transform = transforms.Compose([
+    transforms.RandomCrop(28, padding=4),
+    transforms.RandAugment(),
+    transforms.ToTensor()
+])
+
 # 定义基本预处理（用于测试集）
 basic_transform = transforms.ToTensor()
 
@@ -79,6 +88,47 @@ def get_labeled_mnist():
         if sum(class_counts.values()) == 200:
             break
     return Subset(MNIST(root="./dataset", train=True, transform=weak_transform), indices)
+
+# 定义增强类
+class AugmentedLabeledMNIST(Dataset):
+    def __init__(self, base_dataset, n_aug=4, transform=None):
+        self.images = []
+        self.labels = []
+        self.transform = transform
+        self.n_aug = n_aug
+
+        for img, label in base_dataset:
+            # 原始图像保留
+            self.images.append(img)
+            self.labels.append(label)
+            # 添加增强版本
+            for _ in range(n_aug):
+                self.images.append(img)
+                self.labels.append(label)
+
+    def __getitem__(self, idx):
+        img = self.images[idx]
+        if self.transform:
+            img = self.transform(img)
+        return img, self.labels[idx]
+
+    def __len__(self):
+        return len(self.images)
+
+# 加载 MNIST 数据集并对每个数据进行增强
+def get_labeled_mnist_augmented(n_aug=4):
+    full_mnist = MNIST(root="./dataset", train=True, download=True)
+    class_counts = {i: 0 for i in range(10)}
+    indices = []
+    for i, (_, label) in enumerate(full_mnist):
+        if class_counts[label] < 20:
+            indices.append(i)
+            class_counts[label] += 1
+        if sum(class_counts.values()) == 200:
+            break
+    subset = Subset(full_mnist, indices)
+
+    return AugmentedLabeledMNIST(subset, n_aug=n_aug, transform=aug_transform)
 
 # 加载未标注数据（8000 MNIST + 2000 EMNIST-letters）
 def get_unlabeled_data():
@@ -257,7 +307,7 @@ def evaluate(model, test_loader):
 # 主函数
 def main():
     # 初始化有标签数据集、无标签数据集和验证集
-    labeled_set = get_labeled_mnist()
+    labeled_set = get_labeled_mnist_augmented() if labeled_data_augmentation else get_labeled_mnist()
     unlabeled_set = get_unlabeled_data()
     test_set = get_test_set()
 
@@ -299,8 +349,10 @@ def main():
     unsup_losses = []
     total_train_time = 0
     total_eval_time = 0
-    best_acc = 97
-    acc_step = 0.1
+    save_threshold = 97
+    save_step = 0.1
+    max_acc = 0
+    max_acc_epoch = 0
 
     # 将训练日志重定向至日志文件
     if save_log:
@@ -330,16 +382,19 @@ def main():
             acc = evaluate(model, test_loader)
             eval_end = time.time()
             total_eval_time += eval_end - eval_start
+            if acc > max_acc:
+                max_acc, max_acc_epoch = acc, epoch
 
             # 保存最优模型参数
-            if acc > best_acc and save_model:
-                best_acc = min(max(99.9, acc), acc + acc_step)
+            if acc > save_threshold and save_model:
+                save_threshold = min(max(99.9, acc), acc + save_step)
                 torch.save(model.state_dict(), model_save_path)
                 print(f"Model Saved at: {model_save_path} with Accuracy: {acc:.2f}%")
     
     # 输出用时
-    print(f"Total Time (sec): {total_eval_time + total_train_time:.2f}; Train Time: {total_train_time:.2f}; Eval Time: {total_eval_time:.2f}")
-
+    print(f"Total Time (sec): {total_eval_time + total_train_time:.2f}; Train Time: {total_train_time:.2f}; Eval Time: {total_eval_time:.2f}; Max Accuracy: {max_acc:.2f}% at Epoch {max_acc_epoch:.0f}")
+    print(f"Labeled Dataset Size: {len(labeled_set):.0f}; Unlabeled Dataset Size: {len(unlabeled_set):.0f}")
+    
     # 绘制训练损失曲线
     epochs = list(range(1, len(train_losses) + 1))
     plt.figure(figsize=(8, 5))
