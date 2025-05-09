@@ -1,8 +1,9 @@
 # FixMatch 实现：MNIST + EMNIST 半监督分类任务
 # Features:
-# 1. 可选多种模型(CNN, ResNet)
+# 1. 可选多种模型(CNN, ResNet18, MobileNetV2, ShhulffleNetV2)
 # 2. 引入动态伪标签阈值
 # 3. Early Stopping 稳定性优化
+# 4. _TODO_: 引入 EMA 模型预测伪标签
 
 import torch
 import torch.nn as nn
@@ -11,13 +12,31 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Subset, ConcatDataset
 from torchvision.datasets import MNIST, EMNIST
 from torchvision import transforms
-from torchvision.models import resnet18
+from torchvision.models import resnet18, mobilenet_v2, shufflenet_v2_x0_5
 import numpy as np
 import random
 import matplotlib.pyplot as plt
 import sys
 import os
 import time
+from copy import deepcopy
+
+learning_rate = 0.001
+round = 50
+lambda_unsupervised = 1.0
+max_threshold = 0.9
+min_threshold = 0.5
+thres_arg = 50
+seed = 42
+
+load_saved_model = False
+save_model = True
+save_log = False
+calc_params = False
+
+model_name = "CNN"
+model_save_path = f"fixmatch_mnist_model_{model_name}.pth"
+log_save_path = f"log_{model_name}.txt"
 
 # 设置随机种子
 def set_seed(seed=42):
@@ -26,7 +45,7 @@ def set_seed(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-set_seed()
+set_seed(seed=seed)
 
 # 设置设备（GPU优先）
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -118,7 +137,30 @@ class ResNet18(nn.Module):
 
     def forward(self, x):
         return self.base(x)
-    
+
+# MobileNetV2模型
+class MobileNetV2(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.base = mobilenet_v2(num_classes=10)
+        self.base.features[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1, bias=False)
+
+    def forward(self, x):
+        return self.base(x)
+
+# ShuffleNetV2模型
+class ShuffleNetV2(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.base = shufflenet_v2_x0_5(num_classes=10)
+        self.base.conv1[0] = nn.Conv2d(1, 24, kernel_size=3, stride=2, padding=1, bias=False)
+
+    def forward(self, x):
+        return self.base(x)
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters())
+
 # MixUp 函数
 def mixup(x1, y1, x2, y2, alpha=0.75):
     lam = np.random.beta(alpha, alpha)
@@ -136,11 +178,13 @@ def thres_smooth(max_t, min_t, epoch, k):
     return min(max_t, thres)
 
 # FixMatch 训练函数
-def train_fixmatch(model, labeled_loader, unlabeled_loader,
+def train_fixmatch(model, ema_model, labeled_loader, unlabeled_loader,
                    optimizer, epoch, lambda_u=1.0, max_threshold=0.95,
                    min_threshold=0.5, thres_arg=50, dynamic_thres=True,
-                   thres_strategy=thres_linear, enable_mixup=True):
+                   thres_strategy=thres_linear, enable_mixup=True,
+                   ema_decay=0.999):
     model.train()
+    ema_model.eval()
     total_loss, total_supervised, total_unsupervised = 0, 0, 0
 
     # 动态阈值
@@ -166,6 +210,7 @@ def train_fixmatch(model, labeled_loader, unlabeled_loader,
             pseudo_labels = torch.softmax(model(x_uw), dim=1)
             max_probs, targets_u = torch.max(pseudo_labels, dim=1)
             mask = max_probs.ge(threshold).float()
+            # print(f"Max prob: {max_probs.mean().item():.4f}, used: {(max_probs > threshold).sum().item()}")
 
         # 强增强计算无标签伪监督损失
         logits_u_s = model(x_us)
@@ -178,6 +223,14 @@ def train_fixmatch(model, labeled_loader, unlabeled_loader,
         loss.backward()
         optimizer.step()
 
+        # EMA 模型参数更新
+        with torch.no_grad():
+            for ema_param, model_param in zip(ema_model.parameters(), model.parameters()):
+                ema_param.data.mul_(ema_decay).add_(model_param.data, alpha=1 - ema_decay)
+            
+            for ema_buffer, model_buffer in zip(ema_model.buffers(), model.buffers()):
+                ema_buffer.data.copy_(model_buffer.data)
+        
         total_loss += loss.item()
         total_supervised += loss_l.item()
         total_unsupervised += loss_u.item()
@@ -201,21 +254,6 @@ def evaluate(model, test_loader):
     print(f"Test Accuracy: {acc:.2f}%")
     return acc
 
-learning_rate = 0.001
-round = 50
-lambda_unsupervised = 1.0
-max_threshold = 0.8
-min_threshold = 0.5
-thres_arg = 50
-
-load_saved_model = False
-save_model = True
-save_log = False
-
-model_name = "ResNet"
-model_save_path = f"fixmatch_mnist_model_{model_name}.pth"
-log_save_path = "log.txt"
-
 # 主函数
 def main():
     # 初始化有标签数据集、无标签数据集和验证集
@@ -232,15 +270,26 @@ def main():
         model = SimpleCNN()
     elif model_name == "ResNet":
         model = ResNet18()
+    elif model_name == "MobileNet":
+        model = MobileNetV2()
+    elif model_name == "ShuffleNet":
+        model = ShuffleNetV2()
     else:
         print(f"Undefined Model: {model_name}")
         return 1
     model = model.to(device)
 
+    if calc_params:
+        print(f"Model {model_name} Params: {count_parameters(model)}")
+        return 0
+
     # 可选择加载已保存的模型
     if os.path.exists(model_save_path) and load_saved_model:
         model.load_state_dict(torch.load(model_save_path, map_location=device))
         print(f"Load Model from: {model_save_path}")
+    ema_model = deepcopy(model).to(device)
+    ema_model.requires_grad_(False)
+    ema_model.eval()
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -250,7 +299,7 @@ def main():
     unsup_losses = []
     total_train_time = 0
     total_eval_time = 0
-    best_acc = 98
+    best_acc = 97
     acc_step = 0.1
 
     # 将训练日志重定向至日志文件
@@ -260,33 +309,33 @@ def main():
     # 训练预设轮数
     for epoch in range(1, round + 1):
         train_start = time.time()
-        total_loss, sup_loss, unsup_loss = train_fixmatch(model, labeled_loader,
+        total_loss, sup_loss, unsup_loss = train_fixmatch(model, ema_model, labeled_loader,
                                                           unlabeled_loader, optimizer, epoch,
                                                           lambda_u=lambda_unsupervised,
                                                           max_threshold=max_threshold,
                                                           min_threshold=min_threshold,
                                                           thres_arg=thres_arg,
                                                           dynamic_thres=not load_saved_model,
-                                                          thres_strategy=thres_linear,
+                                                          thres_strategy=thres_smooth,
                                                           enable_mixup=False)
         train_end = time.time()
+        total_train_time += train_end - train_start
 
         train_losses.append(total_loss)
         sup_losses.append(sup_loss)
         unsup_losses.append(unsup_loss)
 
-        eval_start = time.time()
-        acc = evaluate(model, test_loader)
-        eval_end = time.time()
+        if epoch > round / 2:
+            eval_start = time.time()
+            acc = evaluate(model, test_loader)
+            eval_end = time.time()
+            total_eval_time += eval_end - eval_start
 
-        total_train_time += train_end - train_start
-        total_eval_time += eval_end - eval_start
-
-        # 保存最优模型参数
-        if acc > best_acc and save_model:
-            best_acc = min(max(99.9, acc), acc + acc_step)
-            torch.save(model.state_dict(), model_save_path)
-            print(f"Model Saved at: {model_save_path} with Accuracy: {acc:.2f}%")
+            # 保存最优模型参数
+            if acc > best_acc and save_model:
+                best_acc = min(max(99.9, acc), acc + acc_step)
+                torch.save(model.state_dict(), model_save_path)
+                print(f"Model Saved at: {model_save_path} with Accuracy: {acc:.2f}%")
     
     # 输出用时
     print(f"Total Time (sec): {total_eval_time + total_train_time:.2f}; Train Time: {total_train_time:.2f}; Eval Time: {total_eval_time:.2f}")
