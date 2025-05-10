@@ -29,6 +29,8 @@ max_threshold = 0.9
 min_threshold = 0.5
 thres_arg = 50
 seed = 42
+batch_labeled = 64
+batch_unlabeled = 128
 
 load_saved_model = False
 save_model = True
@@ -232,7 +234,7 @@ def train_fixmatch(model, ema_model, labeled_loader, unlabeled_loader,
                    optimizer, epoch, lambda_u=1.0, max_threshold=0.95,
                    min_threshold=0.5, thres_arg=50, dynamic_thres=True,
                    thres_strategy=thres_linear, enable_mixup=True,
-                   ema_decay=0.999):
+                   ema_decay=0.999, mu=1):
     model.train()
     ema_model.eval()
     total_loss, total_supervised, total_unsupervised = 0, 0, 0
@@ -264,7 +266,7 @@ def train_fixmatch(model, ema_model, labeled_loader, unlabeled_loader,
 
         # 强增强计算无标签伪监督损失
         logits_u_s = model(x_us)
-        loss_u = (F.cross_entropy(logits_u_s, targets_u, reduction="none") * mask).mean()
+        loss_u = (1 / mu) * (F.cross_entropy(logits_u_s, targets_u, reduction="none") * mask).mean()
 
         # 总损失
         loss = loss_l + lambda_u * loss_u
@@ -311,8 +313,8 @@ def main():
     unlabeled_set = get_unlabeled_data()
     test_set = get_test_set()
 
-    labeled_loader = DataLoader(labeled_set, batch_size=64, shuffle=True)
-    unlabeled_loader = DataLoader(unlabeled_set, batch_size=128, shuffle=True)
+    labeled_loader = DataLoader(labeled_set, batch_size=batch_labeled, shuffle=True)
+    unlabeled_loader = DataLoader(unlabeled_set, batch_size=batch_unlabeled, shuffle=True)
     test_loader = DataLoader(test_set, batch_size=128, shuffle=False)
 
     # 初始化模型与优化器，可选用CNN或ResNet
@@ -369,7 +371,8 @@ def main():
                                                           thres_arg=thres_arg,
                                                           dynamic_thres=not load_saved_model,
                                                           thres_strategy=thres_smooth,
-                                                          enable_mixup=False)
+                                                          enable_mixup=False,
+                                                          mu=batch_unlabeled / batch_labeled)
         train_end = time.time()
         total_train_time += train_end - train_start
 
