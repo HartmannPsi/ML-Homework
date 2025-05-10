@@ -4,7 +4,9 @@
 # 2. 动态伪标签阈值
 # 3. Early Stopping 稳定性优化
 # 4. 对有标签数据集使用 RandAugment 增强并增广
-# 5. _TODO_: 使用 EMA 模型预测伪标签
+# 5. *DEPRECATE*: 使用 EMA 模型预测伪标签
+# 6. 使用 SGD 代替 Adam 优化器
+# 7. 使用动态平滑学习率
 
 import torch
 import torch.nn as nn
@@ -22,7 +24,7 @@ import os
 import time
 from copy import deepcopy
 
-learning_rate = 0.001
+learning_rate = 0.03
 round = 50
 lambda_unsupervised = 1.0
 max_threshold = 0.9
@@ -38,7 +40,7 @@ save_log = False
 calc_params = False
 labeled_data_augmentation = True
 
-model_name = "CNN"
+model_name = "ResNet"
 model_save_path = f"fixmatch_mnist_model_{model_name}.pth"
 log_save_path = f"log_{model_name}.txt"
 
@@ -229,6 +231,10 @@ def thres_smooth(max_t, min_t, epoch, k):
     thres = min_t + (1 - min_t) * (1 - np.exp(-(epoch - 1) / k))
     return min(max_t, thres)
 
+# 余弦学习率衰减策略
+def cosine_fixmatch_lr_schedule(base_lr, epoch, round):
+    return base_lr * np.cos((7 * np.pi * epoch) / (16 * round))
+
 # FixMatch 训练函数
 def train_fixmatch(model, ema_model, labeled_loader, unlabeled_loader,
                    optimizer, epoch, lambda_u=1.0, max_threshold=0.95,
@@ -236,7 +242,7 @@ def train_fixmatch(model, ema_model, labeled_loader, unlabeled_loader,
                    thres_strategy=thres_linear, enable_mixup=True,
                    ema_decay=0.999, mu=1):
     model.train()
-    ema_model.eval()
+    # ema_model.eval()
     total_loss, total_supervised, total_unsupervised = 0, 0, 0
 
     # 动态阈值
@@ -276,16 +282,21 @@ def train_fixmatch(model, ema_model, labeled_loader, unlabeled_loader,
         optimizer.step()
 
         # EMA 模型参数更新
-        with torch.no_grad():
-            for ema_param, model_param in zip(ema_model.parameters(), model.parameters()):
-                ema_param.data.mul_(ema_decay).add_(model_param.data, alpha=1 - ema_decay)
+        # with torch.no_grad():
+        #     for ema_param, model_param in zip(ema_model.parameters(), model.parameters()):
+        #         ema_param.data.mul_(ema_decay).add_(model_param.data, alpha=1 - ema_decay)
             
-            for ema_buffer, model_buffer in zip(ema_model.buffers(), model.buffers()):
-                ema_buffer.data.copy_(model_buffer.data)
+        #     for ema_buffer, model_buffer in zip(ema_model.buffers(), model.buffers()):
+        #         ema_buffer.data.copy_(model_buffer.data)
         
         total_loss += loss.item()
         total_supervised += loss_l.item()
         total_unsupervised += loss_u.item()
+
+        # 学习率衰减
+        lr = cosine_fixmatch_lr_schedule(base_lr=0.03, epoch=epoch, round=round)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
 
     print(f"[Epoch {epoch}] Total Loss: {total_loss:.4f}, Supervised: {total_supervised:.4f}, Unsupervised: {total_unsupervised:.4f}, Used Unlabeled Data: {mask.sum().item():.0f}")
     return total_loss, total_supervised, total_unsupervised
@@ -317,7 +328,7 @@ def main():
     unlabeled_loader = DataLoader(unlabeled_set, batch_size=batch_unlabeled, shuffle=True)
     test_loader = DataLoader(test_set, batch_size=128, shuffle=False)
 
-    # 初始化模型与优化器，可选用CNN或ResNet
+    # 初始化模型与优化器
     if model_name == "CNN":
         model = SimpleCNN()
     elif model_name == "ResNet":
@@ -339,11 +350,19 @@ def main():
     if os.path.exists(model_save_path) and load_saved_model:
         model.load_state_dict(torch.load(model_save_path, map_location=device))
         print(f"Load Model from: {model_save_path}")
-    ema_model = deepcopy(model).to(device)
-    ema_model.requires_grad_(False)
-    ema_model.eval()
+    ema_model = 0
+    # ema_model = deepcopy(model).to(device)
+    # ema_model.requires_grad_(False)
+    # ema_model.eval()
 
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    # optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.SGD(
+        model.parameters(),       # 模型参数
+        lr=learning_rate,                  # 学习率（建议高于 Adam，FixMatch 中推荐 0.03~0.1）
+        momentum=0.9,             # 动量（经典值）
+        weight_decay=5e-4,        # L2正则（建议开启，防过拟合）
+        nesterov=True             # 推荐启用 Nesterov 动量
+    )
 
     # 初始化损失数组与最优准确率
     train_losses = []
