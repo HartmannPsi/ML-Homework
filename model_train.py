@@ -1,6 +1,6 @@
 # FixMatch 实现：MNIST + EMNIST 半监督分类任务
 # Features:
-# 1. 可选多种模型 (CNN, ResNet18, MobileNetV2, ShhulffleNetV2)
+# 1. 可选多种模型 (CNN, ResNet18, MobileNetV2, ShuffleNetV2, ViT)
 # 2. 动态伪标签阈值
 # 3. Early Stopping 稳定性优化
 # 4. 对有标签数据集使用 RandAugment 增强并增广
@@ -23,11 +23,12 @@ import sys
 import os
 import time
 from copy import deepcopy
+from timm import create_model
 
 learning_rate = 0.03
 round = 50
 lambda_unsupervised = 1.0
-max_threshold = 0.9
+max_threshold = 0.95
 min_threshold = 0.5
 thres_arg = 50
 seed = 42
@@ -212,6 +213,21 @@ class ShuffleNetV2(nn.Module):
     def forward(self, x):
         return self.base(x)
 
+# ViT模型
+class ViT(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.base = create_model(
+            "vit_tiny_patch16_224",
+            pretrained=False,
+            in_chans=1,
+            num_classes=10
+        )
+
+    def forward(self, x):
+        x = F.interpolate(x, size=(224, 224), mode="bilinear")
+        return self.base(x)
+
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters())
 
@@ -337,6 +353,8 @@ def main():
         model = MobileNetV2()
     elif model_name == "ShuffleNet":
         model = ShuffleNetV2()
+    elif model_name == "ViT":
+        model = ViT()
     else:
         print(f"Undefined Model: {model_name}")
         return 1
@@ -370,7 +388,7 @@ def main():
     unsup_losses = []
     total_train_time = 0
     total_eval_time = 0
-    save_threshold = 97
+    save_threshold = 95
     save_step = 0.1
     max_acc = 0
     max_acc_epoch = 0
