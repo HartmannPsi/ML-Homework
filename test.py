@@ -1,14 +1,11 @@
 import torch
-import torch.optim as optim
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
-import sys
 import os
-import time
 from lib import *
 
 model_name = "ResNet"
-model_save_path = f"releases/1.0_ResNet/fixmatch_mnist_model_{model_name}.pth"
+model_save_path = f"fixmatch_mnist_model_{model_name}.pth"
 log_save_path = f"log_{model_name}.txt"
 
 def show_wrong(wrong, n=9):

@@ -139,7 +139,8 @@ def main():
                 print(f"Model Saved at: {model_save_path} with Accuracy: {acc:.2f}%")
     
     # 输出用时
-    print(f"Total Time (sec): {total_eval_time + total_train_time:.2f}; Train Time: {total_train_time:.2f}; Eval Time: {total_eval_time:.2f}; Max Accuracy: {max_acc:.2f}% at Epoch {max_acc_epoch:.0f}")
+    print(f"Total Time (sec): {total_eval_time + total_train_time:.2f}; Train Time: {total_train_time:.2f}; Eval Time: {total_eval_time:.2f};"
+          f" Max Accuracy: {max_acc:.2f}% at Epoch {max_acc_epoch:.0f}")
     print(f"Labeled Dataset Size: {len(labeled_set):.0f}; Unlabeled Dataset Size: {len(unlabeled_set):.0f}")
     
     # 绘制训练损失曲线
