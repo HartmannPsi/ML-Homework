@@ -77,3 +77,20 @@ zlib                      1.2.13               h5eee18b_1    defaults
 
 Trained with RTX 5070Ti (CUDA 12.8)
 ```
+
+## File Path
+
+```
+./
+├── dataset/
+│   ├── MNIST/
+│   │   └── raw/
+│   │       └── ...
+│   └── EMNIST/
+│       └── raw/
+│           └── ... (only need letter data)
+├── README.md
+├── test.py
+├── train.py
+└── lib.py
+```
