@@ -83,10 +83,10 @@ def main():
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     optimizer = optim.SGD(
         model.parameters(),       # 模型参数
-        lr=learning_rate,                  # 学习率（建议高于 Adam，FixMatch 中推荐 0.03~0.1）
-        momentum=0.9,             # 动量（经典值）
-        weight_decay=5e-4,        # L2正则（建议开启，防过拟合）
-        nesterov=True             # 推荐启用 Nesterov 动量
+        lr=learning_rate,         # 学习率
+        momentum=0.9,             # 动量
+        weight_decay=5e-4,        # L2正则
+        nesterov=True             # Nesterov 动量
     )
 
     # 初始化损失数组与最优准确率
