@@ -22,13 +22,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # 定义弱增强（Weak Augmentation）和强增强（Strong Augmentation）策略
 weak_transform = transforms.Compose([
-    transforms.RandomHorizontalFlip(),
+    # transforms.RandomHorizontalFlip(),
     transforms.RandomCrop(28, padding=4),
     transforms.ToTensor()
 ])
 
 strong_transform = transforms.Compose([
-    transforms.RandomHorizontalFlip(),
+    # transforms.RandomHorizontalFlip(),
     transforms.RandomCrop(28, padding=4),
     transforms.RandAugment(),
     transforms.ToTensor()
