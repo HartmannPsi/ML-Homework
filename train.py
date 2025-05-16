@@ -18,7 +18,7 @@ import time
 from lib import *
 
 learning_rate = 0.03
-round = 50
+round = 100
 lambda_unsupervised = 1.0
 max_threshold = 0.95
 min_threshold = 0.5
@@ -29,11 +29,11 @@ batch_unlabeled = 128
 
 load_saved_model = False
 save_model = True
-save_log = False
+save_log = True
 calc_params = False
 labeled_data_augmentation = True
 
-model_name = "ResNet"
+model_name = "ViT"
 model_save_path = f"fixmatch_mnist_model_{model_name}.pth"
 log_save_path = f"log_{model_name}.txt"
 
@@ -154,7 +154,7 @@ def main():
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig("loss_curve.png")
+    plt.savefig(f"loss_curve_{model_name}.png")
     plt.show()
 
 if __name__ == "__main__":
