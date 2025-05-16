@@ -194,13 +194,6 @@ class ViT(nn.Module):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters())
 
-# MixUp 函数
-def mixup(x1, y1, x2, y2, alpha=0.75):
-    lam = np.random.beta(alpha, alpha)
-    x_mix = lam * x1 + (1 - lam) * x2
-    y_mix = lam * y1 + (1 - lam) * y2
-    return x_mix, y_mix
-
 # 两种动态阈值策略（线性或平滑）
 def thres_linear(max_t, min_t, epoch, k):
     step = (max_t - min_t) / k
@@ -218,7 +211,7 @@ def cosine_fixmatch_lr_schedule(base_lr, epoch, round):
 def train_fixmatch(model, ema_model, labeled_loader, unlabeled_loader,
                    optimizer, epoch, round, lambda_u=1.0, max_threshold=0.95,
                    min_threshold=0.5, thres_arg=50, dynamic_thres=True,
-                   thres_strategy=thres_linear, enable_mixup=True,
+                   thres_strategy=thres_linear,
                    ema_decay=0.999, mu=1):
     model.train()
     # ema_model.eval()
@@ -232,15 +225,8 @@ def train_fixmatch(model, ema_model, labeled_loader, unlabeled_loader,
         x_uw, x_us = x_uw.to(device), x_us.to(device)
 
         # 有标签监督损失
-        # 数据增强： one-hot + mixup
-        if enable_mixup:
-            y_l_onehot =  F.one_hot(y_l, num_classes=10).float()
-            x_l, y_l_onehot = mixup(x_l, y_l_onehot, x_l.flip(0), y_l_onehot.flip(0))
-            logits_l = model(x_l)
-            loss_l = F.cross_entropy(logits_l, y_l_onehot)
-        else:
-            logits_l = model(x_l)
-            loss_l = F.cross_entropy(logits_l, y_l)
+        logits_l = model(x_l)
+        loss_l = F.cross_entropy(logits_l, y_l)
 
         # 弱增强预测伪标签
         with torch.no_grad():

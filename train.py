@@ -115,7 +115,6 @@ def main():
                                                           thres_arg=thres_arg,
                                                           dynamic_thres=not load_saved_model,
                                                           thres_strategy=thres_smooth,
-                                                          enable_mixup=False,
                                                           mu=batch_unlabeled / batch_labeled)
         train_end = time.time()
         total_train_time += train_end - train_start
