@@ -109,7 +109,7 @@ Optimizer: SGD with momentum=$0.9$, weight_decay=$5times 10^(-4)$, nesterov=True
 
 Learning Rate: $0.03$ with cosine decay;
 
-Batch Sizes: $64$ for labeled, $128$ for unlabeled;
+Batch Sizes: $64$ for labeled, $128$ for unlabeled unless noted otherwise;
 
 Epochs: $1000$ unless noted otherwise;
 
@@ -139,6 +139,8 @@ The following table summarizes the performance of different models on the MNIST 
 
 In our experiment, ResNet18 outperforms all other models in accuracy and convergence speed. ShuffleNet underperforms in this small-scale setting, and ViT without pretraining fails to converge within 1000 steps.
 
+To explore the model capacity of our method in <1>extreme low-resource settings, we also evaluate the performance of CNN and ResNet18 under one-shot condition (only *1* labeled data per class) within *100* training epochs. Despite the challenging setting, CNN achieved an accuracy of *94.5%* and ResNet18 *96.3%* respectively. The results indicate that our method is capable of achieving high accuracy even with extremely limited labeled data.
+
 == Impact of Augmentation and Flip Removal
 Using RandAugment and 4x augmentation per labeled sample improves early convergence: ResNet18 reaches 95% accuracy in only 100 epochs.
 
@@ -152,6 +154,8 @@ We plot the training loss curves in first 100 epochs for selected models as foll
 #figure(image("loss_curve_MobileNet.png"), caption: [MobileNetV2])
 #figure(image("loss_curve_ShuffleNet.png"), caption: [ShuffleNetV2])
 #figure(image("loss_curve_ViT.png"), caption: [ViT-Tiny])
+#figure(image("loss_curve_CNN_oneshot.png"), caption: [SimpleCNN Under #link(<1>)[Extreme Low-Resource Condition]])
+#figure(image("loss_curve_ResNet_oneshot.png"), caption: [ResNet18 Under #link(<1>)[Extreme Low-Resource Condition]])
 
 
 = Discussion and Conclusion
