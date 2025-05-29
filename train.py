@@ -33,7 +33,7 @@ save_log = True
 calc_params = False
 labeled_data_augmentation = True
 
-model_name = "ViT"
+model_name = "ResNet"
 model_save_path = f"fixmatch_mnist_model_{model_name}.pth"
 log_save_path = f"log_{model_name}.txt"
 
@@ -95,7 +95,7 @@ def main():
     unsup_losses = []
     total_train_time = 0
     total_eval_time = 0
-    save_threshold = 95
+    save_threshold = 70
     save_step = 0.1
     max_acc = 0
     max_acc_epoch = 0
